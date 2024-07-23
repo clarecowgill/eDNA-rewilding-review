@@ -1,0 +1,1019 @@
+---
+title: "Meta analysis"
+output: html_document
+date: "2024-02-09"
+---
+
+Set directory and find files
+```{r}
+getwd()
+full.data = read.csv('Full database.csv')
+multiFA.data = read.csv('Multiple FA.csv')
+multiTax.data = read.csv('Multiple Taxa.csv')
+multiSub.data = read.csv('Multiple Substrates.csv')
+multiEco.data = read.csv('Multiple Ecosystems.csv')
+```
+
+Joining the full and expanded datasets, then cleaning up the data to remove 'Multiples'
+```{r}
+library(dplyr)
+#Substrates
+# full join to combine the full dataset with the dataset with expanded multiple substrates
+all_subs = full_join(full.data, multiSub.data) %>% 
+  #Selecting which collumns to keep
+  select(Study.No., Ecosystem, Taxonomic.Group, Substrate, Functional.analysis, Continent, Year) %>%
+  #Removing the 'Multiple' substrates remaining in from the full dataset
+  filter(Substrate != "Multiple")
+
+#Taxa
+all_taxa = full_join(full.data, multiTax.data) %>% 
+  #Selecting which collumns to keep
+  select(Study.No., Ecosystem, Taxonomic.Group, Substrate, Functional.analysis, Continent, Year) %>%
+  #Removing the 'Multiple' taxonomic groups remaining in from the full dataset
+  filter(Taxonomic.Group != "Multiple")
+
+#Functional analysis (FA)
+all_FA = full_join(full.data, multiFA.data) %>% 
+  #Selecting which collumns to keep
+  select(Study.No., Ecosystem, Taxonomic.Group, Substrate, Functional.analysis, Continent, Year) %>%
+  #Removing the rows with mutliple functional analysis in the same cell
+  filter(Functional.analysis != "Multiple")
+
+#Ecosystems
+all_ecos = full_join(full.data, multiEco.data) %>% 
+  #Selecting which collumns to keep
+  select(Study.No., Ecosystem, Taxonomic.Group, Substrate, Functional.analysis, Continent, Year) %>%
+  #Removing the 'Multiple' substrates remaining in from the full dataset
+  filter(Ecosystem != "Multiple")
+```
+Publication trends in context - stacked bar and point plot
+```{r}
+library(dplyr)
+library(ggplot2)
+library(viridis)
+
+ter_data = full.data %>% 
+  select(Year) %>% 
+  count(Year) %>% 
+  na.omit() %>% 
+  mutate(eDNA_Focus = 'Terrestrial')
+
+tersoil_data = read.csv('Terrestrial and soil.csv') %>% 
+  select(Year) %>% 
+  count(Year) %>% 
+  na.omit() %>% 
+  mutate(eDNA_Focus = 'Terrestrial AND Soil')
+
+all_data = read.csv('All eDNA papers.csv') %>% 
+  select(Year) %>% 
+  count(Year)
+
+all_data2 <- all_data %>%
+  left_join(ter_data %>% select(Year, n_ter = n), by = "Year") %>%
+  mutate(
+    n = if_else(is.na(n_ter), n, n - n_ter), # Subtract ter_data count if present, else keep all_data count
+    n_ter = NULL # Remove the temporary n_ter column used for calculation
+  ) %>%
+  mutate(eDNA_Focus = 'Aquatic')
+
+all_data3 <- all_data %>%
+  left_join(tersoil_data %>% select(Year, n_ter = n), by = "Year") %>%
+  mutate(
+    n = if_else(is.na(n_ter), n, n - n_ter), 
+    n_ter = NULL
+  ) %>%
+  mutate(eDNA_Focus = 'None')
+
+tersoil_data <- tersoil_data %>%
+  left_join(ter_data %>% select(Year, n_ter = n), by = "Year") %>%
+  mutate(
+    n = if_else(is.na(n_ter), n, n - n_ter), 
+    n_ter = NULL
+  ) %>%
+  mutate(eDNA_Focus = 'Soil')
+
+combined_data <- bind_rows(all_data2, ter_data, tersoil_data)
+
+# Calculate total counts per year
+yearly_totals <- combined_data %>%
+  group_by(Year) %>%
+  summarize(Total = sum(n))
+
+# Calculate percentages
+combined_data <- combined_data %>%
+  left_join(yearly_totals, by = "Year") %>%
+  mutate(Percentage = (n / Total))
+
+# Calculate a factor to align the secondary axis
+max_count <- max(combined_data$Total)
+max_percentage <- 1
+scale_factor <- max_count / max_percentage
+
+combined_data$Year <- as.factor(combined_data$Year)
+
+plot <- ggplot() +
+  geom_bar(data = combined_data, aes(x = Year, y = Percentage, fill = eDNA_Focus), position = "fill", stat = "identity") +
+  scale_fill_manual(values = c("Aquatic" = "#c0e4fa", "Terrestrial" = "#298a41", "Soil" = "#85bd3c")) +
+  geom_line(data = combined_data, aes(x = Year, y = Total / scale_factor, group = eDNA_Focus), color = "darkslategray", size = 1) +
+  scale_shape_manual(values = c("All" = 21)) +
+  guides(color = guide_none(), shape = guide_none()) + # This removes the line and point from the legend
+  scale_y_continuous(
+    name = "Percentage", 
+    labels = scales::percent_format(),
+    sec.axis = sec_axis(~ . * scale_factor, name = "Count", labels = scales::comma)
+  ) +
+  theme_minimal() +
+  labs(x = "Year", fill = "") +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 50, hjust = 0.8),
+    axis.line = element_line(colour = 'black', size = 1),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", colour = "white"),
+    panel.border = element_rect(colour = "black", fill = NA),
+    plot.background = element_rect(fill = "white", colour = "white"),
+    legend.background = element_rect(fill = "white", colour = "white"))
+
+ggsave("Counts.png", plot = plot, width = 4, height = 3.75, dpi = 300)
+
+```
+
+
+
+
+Making a world map of the data
+```{r}
+library(ggplot2)
+library(dplyr)
+library(viridis)
+
+
+#Creating a dataframe which has the number of times a study was located in that country
+countries = read.csv('Countries.csv') %>% 
+  count(Country) %>% 
+  #Remove the 'blank' row
+  filter(Country != '') %>% 
+  #Rename country column to region so it fits with the ggplot data
+  rename(region = Country)
+
+#Load in ggplot's map data and do a left join to leave only the relevant data points
+mapdata = map_data("world") ##ggplot2
+mapdata = left_join(mapdata, countries, by="region")
+
+#Make the map a bit prettier
+map1 <- ggplot(mapdata, aes( x = long, y = lat, group=group)) +
+  geom_polygon(aes(fill = n), color = "black") + 
+  scale_fill_viridis_c(option = "viridis", guide = "colorbar", direction = -1, na.value = "white") +
+  theme(axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank(), axis.title.y=element_blank(), axis.title.x=element_blank(), rect = element_blank())
+map1
+
+
+########################## Alternative map with continents #############################
+
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(sf)
+
+world = read_sf('World_Continents/World_Continents.shp')
+
+# Relabel continents
+africa = world[world$CONTINENT == 'Africa',]
+asia = world[world$CONTINENT == 'Asia',]
+world$CONTINENT[world$CONTINENT == 'Australia'] <- 'Oceania'
+oceania = world[world$CONTINENT == 'Oceania',]
+south_america = world[world$CONTINENT == 'South America',]
+antarctica = world[world$CONTINENT == 'Antarctica',]
+europe = world[world$CONTINENT == 'Europe',]
+north_america = world[world$CONTINENT == 'North America',]
+
+# Bring in data
+contcount = read.csv('Full database.csv') %>% 
+  select(Continent, Study.No.) %>% 
+  count(Continent) %>%
+  filter(Continent != 'Global')
+
+world_with_counts <- merge(world, contcount, by.x = "CONTINENT", by.y = "Continent", all.x = TRUE)
+
+# Calculate centroids for text placement
+world_with_counts$centroid <- st_centroid(world_with_counts$geometry)
+# Extract longitude and latitude for the centroids
+world_with_counts$lon <- st_coordinates(world_with_counts$centroid)[, 1]
+world_with_counts$lat <- st_coordinates(world_with_counts$centroid)[, 2]
+# Adjust Antarctica's label position by setting its longitude to 0
+world_with_counts <- world_with_counts %>%
+  mutate(lon = ifelse(CONTINENT == 'Antarctica', 0, lon),
+         lat = ifelse(CONTINENT == 'Antarctica', lat + 5, lat))
+# Create a new column for labeling purposes
+world_with_counts <- world_with_counts %>%
+  mutate(label = ifelse(OBJECTID == 4, NA, n))
+
+map2 = ggplot(data = world_with_counts) +
+  geom_sf(aes(fill = n), color = NA) +
+  scale_fill_viridis_c(option = "viridis", guide = "colorbar", direction = -1) +
+  labs(fill = "Study Count", x = NULL, y = NULL, size = 10) +
+  theme(
+    panel.background = element_rect(fill = "white", colour = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", colour = NA),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 12)
+  ) +
+  geom_point(aes(x = lon, y = lat), size = 10, color = "white", shape = 19) +
+  geom_text(aes(x = lon, y = lat, label = label), size = 6, color = "black", check_overlap = TRUE)
+
+ggsave("continent_map.png", plot = map2, width = 10, height = 6, dpi = 300)
+ggsave("Country_map.png", plot = map1, width = 15, height = 8, dpi = 300)
+
+```
+
+
+Plotting a sankey but expanding out all multiples
+- To prevent psudoreplication, only adjacent multiples were expanded (i.e. multiple ecosystems and multiple substrates, but not multiple ecoysystems and multiple taxa)
+```{r}
+library(ggsankey)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+#Take the expanded FA and taxa
+all_FA_taxa = full_join(all_FA, all_taxa)
+
+#Take this df and add expanded substrates
+all_sub_tax_fa = full_join(all_FA_taxa, all_subs)
+
+#Add to the expanded ecosystem data
+all_eco_sub_tax_fa = full_join(all_sub_tax_fa, all_ecos)
+
+#Adding this data to the non-multiples full dataframe and filter out multiples
+full_sankey <- full_join(all_eco_sub_tax_fa, select(full.data, Study.No., Ecosystem, Taxonomic.Group, Substrate, Functional.analysis, Continent, Year)) %>%
+  mutate(Functional.analysis = str_replace(Functional.analysis, "Species richness / community composition", "Species richness /\ncommunity composition")) %>%
+  filter(Functional.analysis != "Multiple", Taxonomic.Group != "Multiple", Substrate != "Multiple", Ecosystem != "Multiple") %>%
+  add_count(Substrate) %>%
+  mutate(Substrate = ifelse(n <= 3, "Other", Substrate)) %>%
+  filter(n > 3 | Substrate == "Other") %>%
+  select(-n) %>%
+  ungroup() %>%
+  add_count(Ecosystem) %>%
+  mutate(Ecosystem = ifelse(n <= 3, "Other", Ecosystem)) %>%
+  filter(n > 3 | Ecosystem == "Other") %>%
+  select(-n) %>%
+  ungroup() %>% 
+  rename('Taxonomic Group' = Taxonomic.Group) %>% 
+  rename('Analysis' = Functional.analysis)
+
+#Plot the sankey
+sankeydf = full_sankey %>% 
+  make_long(Year, Ecosystem, Substrate, 'Taxonomic Group', 'Analysis')
+
+#Final plot
+sankey_final = ggplot(sankeydf, aes(x = x
+                          , next_x = next_x
+                          , node = node
+                          , next_node = next_node
+                          , fill = factor(node)
+                          , label = node)) +
+  geom_sankey(flow.alpha = 0.5
+              , node.color = "black"
+              , show.legend = FALSE) + theme_bw() + #Add the themes and clean up
+  theme(legend.position = "none") + scale_fill_viridis_d() + theme(axis.title = element_blank(), axis.text.y = element_blank(), axis.text.x = element_blank(), axis.ticks = element_blank(), panel.grid = element_blank()) +#labels
+  geom_sankey_label(size = 3, color = 1, fill= "lightyellow") +
+  theme_sankey(base_size = 5) + 
+  theme(legend.position = "none",
+        axis.text=element_text(size=12)) +
+  xlab(NULL)
+sankey_final
+
+ggsave("sankey.png", plot = sankey_final, width = 12, height = 6, dpi = 300)
+
+```
+
+Setting out the data for bubble plots
+```{r}
+#Create a df with expanded substrates, plus the full data, and filter it to just substrates and year. Then find the frequency of each combination
+SubYear = full_join(full.data, multiSub.data) %>% 
+  select(Substrate, Year) %>% 
+  filter(Substrate != "Multiple") %>% 
+  #Find substrates with 2> entries and replace as Other
+  group_by(Substrate) %>%
+  add_count(Substrate) %>%
+  mutate(Substrate = ifelse(n <= 3, "Other", Substrate)) %>%
+  filter(n > 3 | Substrate == "Other") %>%
+  select(-n) %>%
+  ungroup() %>% 
+  count(Substrate, Year)
+#To add a total at the end of the bubble plot:
+SubYear_Total = SubYear %>% mutate(Year = as.character(Year))
+total_subyear = SubYear %>% 
+  group_by(Substrate) %>% 
+  summarise(Total = sum(n)) %>% 
+  rename(n = Total)
+total_subyear$Year = 'Total'
+SubYear_Total = full_join(total_subyear, SubYear_Total)
+
+TaxaYear = full_join(full.data, multiTax.data) %>% 
+  select(Taxonomic.Group, Year) %>% 
+  filter(Taxonomic.Group != "Multiple") %>% 
+  count(Taxonomic.Group, Year)
+#To add a total at the end of the bubble plot:
+TaxaYear_Total = TaxaYear %>% mutate(Year = as.character(Year))
+total_taxayear = TaxaYear %>% 
+  group_by(Taxonomic.Group) %>% 
+  summarise(Total = sum(n)) %>% 
+  rename(n = Total)
+total_taxayear$Year = 'Total'
+TaxaYear_Total = full_join(total_taxayear, TaxaYear_Total)
+
+FAYear = full_join(full.data, multiFA.data) %>% 
+  select(Functional.analysis, Year) %>% 
+  filter(Functional.analysis != "Multiple") %>% 
+  count(Functional.analysis, Year)
+#To add a total at the end of the bubble plot:
+FAYear_Total = FAYear %>% mutate(Year = as.character(Year))
+total_FAyear = FAYear %>% 
+  group_by(Functional.analysis) %>% 
+  summarise(Total = sum(n)) %>% 
+  rename(n = Total)
+total_FAyear$Year = 'Total'
+FAYear_Total = full_join(total_FAyear, FAYear_Total)
+
+
+EcoYear = full_join(full.data, multiEco.data) %>% 
+  select(Ecosystem, Year) %>% 
+  #filter(Ecosystem != "Multiple") %>% 
+  count(Ecosystem, Year)
+
+SubTaxa = full_join(full_join(full.data, multiSub.data), multiTax.data) %>% 
+  select(Substrate, Taxonomic.Group) %>% 
+  filter(Substrate != "Multiple", Taxonomic.Group != "Multiple") %>%
+  #Find substrates with 2> entries and replace as Other
+  group_by(Substrate) %>%
+  add_count(Substrate) %>%
+  mutate(Substrate = ifelse(n <= 3, "Other", Substrate)) %>%
+  filter(n > 3 | Substrate == "Other") %>%
+  select(-n) %>%
+  ungroup() %>% 
+  count(Substrate, Taxonomic.Group)
+
+SubFA = full_join(full_join(full.data, multiSub.data), multiFA.data) %>% 
+  select(Substrate, Functional.analysis) %>% 
+  filter(Substrate != "Multiple", Functional.analysis != "Multiple") %>% 
+  #Find substrates with 2> entries and replace as Other
+  group_by(Substrate) %>%
+  add_count(Substrate) %>%
+  mutate(Substrate = ifelse(n <= 3, "Other", Substrate)) %>%
+  filter(n > 3 | Substrate == "Other") %>%
+  select(-n) %>%
+  ungroup() %>% 
+  count(Substrate, Functional.analysis)
+
+SubEco = full_join(full_join(full.data, multiSub.data), multiEco.data) %>% 
+  select(Substrate, Ecosystem) %>% 
+  filter(Substrate != "Multiple", Ecosystem != "Multiple") %>%
+  #Find substrates with 2> entries and replace as Other
+  group_by(Substrate) %>%
+  add_count(Substrate) %>%
+  mutate(Substrate = ifelse(n <= 3, "Other", Substrate)) %>%
+  filter(n > 3 | Substrate == "Other") %>%
+  select(-n) %>%
+  ungroup() %>% 
+  count(Substrate, Ecosystem)
+
+TaxaFA = full_join(full_join(full.data, multiTax.data), multiFA.data) %>% 
+  select(Taxonomic.Group, Functional.analysis) %>% 
+  filter(Taxonomic.Group != "Multiple", Functional.analysis != "Multiple") %>% 
+  count(Taxonomic.Group, Functional.analysis)
+
+TaxaEco = full_join(full_join(full.data, multiTax.data), multiEco.data) %>% 
+  select(Taxonomic.Group, Ecosystem) %>% 
+  filter(Taxonomic.Group != "Multiple", Ecosystem != "Multiple") %>% 
+  count(Taxonomic.Group, Ecosystem)
+
+EcoFA = full_join(full_join(full.data, multiEco.data), multiFA.data) %>% 
+  select(Functional.analysis, Ecosystem) %>% 
+  filter(Functional.analysis != "Multiple", Ecosystem != "Multiple") %>% 
+  count(Functional.analysis, Ecosystem)
+
+EcoCont = full_join(full.data, multiEco.data) %>% 
+  select(Continent, Ecosystem) %>% 
+  filter(Ecosystem != "Multiple") %>% 
+  count(Continent, Ecosystem)
+```
+
+Plotting the bubble plots
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(hrbrthemes)
+library(viridis)
+library(dplyr)
+
+suppressWarnings({
+EcoCont_plot = EcoCont %>% ggplot(aes(x=Ecosystem, y = Continent, size=n, fill=Ecosystem)) +
+  geom_point(alpha=0.7, shape=21, color="black") +
+  scale_size(range = c(1, 12), name="Studies") +
+  scale_fill_viridis(discrete = TRUE, guide = FALSE) +
+  theme(legend.position="right") +
+  theme_ipsum() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),        
+        panel.border = element_rect(color = "black", fill = NA, size = 1)) +
+    ylab("") +
+    xlab("") +
+    coord_fixed(ratio = 0.5)
+print(SubFA_plot)
+
+#Bubble plots with taxa on x axis
+# Change the column names of the datasets so that the y-variable is the same column name
+SubTaxa1 <- rename(SubTaxa, "VariableX" = Taxonomic.Group, "VariableY" = Substrate)
+TaxaFA1 <- rename(TaxaFA, "VariableX" = Taxonomic.Group, "VariableY" = Functional.analysis)
+# Combine the datasets into one, adding a 'dataset' column
+SubTaxa1$dataset <- "a."
+TaxaFA1$dataset <- "b."
+merged_taxa <- rbind(SubTaxa1, TaxaFA1)
+# Define the desired break points
+custom_breaks <- c(5, 10, 15, 20, 25, 30, 35)
+# Plot using facet_grid
+merged_taxa_plot <- ggplot(merged_taxa, aes(x = VariableX, y = VariableY, size = n, fill = factor(VariableX))) +
+  geom_count(alpha = 0.7, shape = 21, color = "black") +
+  scale_size(range = c(1, 10), name = "Studies", breaks = custom_breaks) +
+  viridis::scale_fill_viridis(discrete = TRUE, guide = FALSE) +
+  facet_wrap(~ dataset, nrow = 2, scales = "free_y", strip.position = "top") +
+  theme_ipsum() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        strip.background = element_blank(),  # Remove strip background
+        strip.text = element_text(size = 11, hjust = 0, color = "black", face = "bold"),
+        axis.title.y = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1)) +  # Add border around each panel
+  ylab("") +
+  xlab("")
+print(merged_taxa_plot)
+
+#Bubble plots with year
+custom_labels <- c("a.", "b.", "c.")
+SubYear1 <- rename(SubYear, "VariableX" = Year, "VariableY" = Substrate)
+TaxaYear1 <- rename(TaxaYear, "VariableX" = Year, "VariableY" = Taxonomic.Group)
+FAYear1 <- rename(FAYear, "VariableX" = Year, "VariableY" = Functional.analysis)
+SubYear1$dataset = "a."
+FAYear1$dataset = "b."
+TaxaYear1$dataset = "c."
+merged_years = rbind(SubYear1, FAYear1, TaxaYear1)
+# Make 'Year' a factor variable
+merged_years$VariableX = as.factor(merged_years$VariableX)
+merged_years$dataset <- factor(merged_years$dataset, levels = custom_labels)
+# Plot using facet_grid with custom labels
+merged_years_plot = ggplot(merged_years, aes(x = VariableX, y = VariableY, size = n, fill = factor(VariableX))) +
+  geom_count(alpha = 0.7, shape = 21, color = "black") +
+  scale_size(range = c(1, 10), name = "Studies", breaks = custom_breaks) +
+  viridis::scale_fill_viridis(discrete = TRUE, guide = FALSE) +
+  facet_wrap(~ dataset, nrow = 3, scales = "free_y", strip.position = "top", 
+             labeller = labeller(dataset = as_labeller(c("a." = "SubYear", "b." = "FAYear", "c." = "TaxaYear")))) +
+  theme_ipsum() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 11, hjust = 0, color = "black", face = "bold", margin = margin(0, 0, -0.1, 0)),
+        axis.title.y = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1)) +
+  ylab("") +
+  xlab("")
+})
+
+ggsave("merged_years_plot.png", plot = merged_years_plot, width = 8, height = 12, dpi = 300)
+
+ggsave("merged_taxa_plot.png", plot = merged_taxa_plot, width = 8, height = 10, dpi = 300)
+
+ggsave("SubFA_plot.png", plot = SubFA_plot, width = 8, height = 9, dpi = 300)
+
+```
+
+UpsetR plots
+```{r}
+library(UpSetR)
+library(dplyr)
+library(tidyverse)
+
+# UpSet for all substrates
+all_subs_upset <- multiSub.data %>% 
+  mutate(Substrate = ifelse(tolower(trimws(Substrate)) %in% c("spray aggregation", "microbial mats", "pollen", "termite nests", "spider webs", "saltlicks", "cloaca swab"), "Other", Substrate)) %>%
+  filter(Substrate != "Multiple") %>% 
+  select(Study.No., Substrate) %>%
+  distinct(Study.No., Substrate) %>%
+  mutate(value = 1) %>%
+  spread(Substrate, value, fill = 0)
+all_subs_upset <- all_subs_upset[, -1]
+
+# UpSet for all taxa
+joined_data <- full_join(full.data, multiTax.data) %>% 
+  filter(Taxonomic.Group != "Multiple")
+taxa_counts <- joined_data %>%
+  count(Taxonomic.Group) %>%
+  arrange(desc(n)) # Arrange by count, descending
+
+ordered_taxa <- taxa_counts$Taxonomic.Group
+
+binary_matrix <- joined_data %>%
+  select(Study.No., Taxonomic.Group) %>%
+  distinct(Study.No., Taxonomic.Group) %>%
+  mutate(Taxonomic.Group = factor(Taxonomic.Group, levels = ordered_taxa), # Reorder based on counts
+         value = 1) %>%
+  spread(Taxonomic.Group, value, fill = 0)
+
+png(filename = "Upset subs.png", width = 6*300, height = 5*300, res = 300)
+upset(all_subs_upset, sets = names(all_subs_upset)[-1])
+dev.off()
+
+png(filename = "Upset taxa.png", width = 8*300, height = 5*300, res = 300)
+upset(data = binary_matrix, sets = names(binary_matrix)[-1], keep.order = TRUE)
+dev.off()
+
+```
+Plot for substrate comparisons
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+
+########################## Data prep ############################
+
+# Read the CSV file
+subcomparison <- read.csv("./Substrate comparison data/all sub comps.csv")
+subcomparison$Comparison = paste(subcomparison$Substrate1, "vs", subcomparison$Substrate2) 
+# Convert necessary columns to numeric
+subcomparison$S1Unique <- as.numeric(subcomparison$S1Unique)
+subcomparison$S2Unique <- as.numeric(subcomparison$S2Unique)
+subcomparison$Shared <- as.numeric(subcomparison$Shared)
+
+# Calculate total
+subcomparison <- subcomparison %>%
+  mutate(
+    # Calculate percentages for each category
+    Shared.S1 = -Shared / Total,
+    Shared.S2 = Shared / Total,
+    Unique.S1 = -S1Unique / Total,
+    Unique.S2 = S2Unique / Total) %>% 
+  
+  select(Study.No., Site.No., Substrate1, Substrate2, Taxonomic_Focus, Comparison, Shared.S1, Shared.S2, Unique.S1, Unique.S2)
+# Add row identifier
+subcomparison_df = subcomparison %>%
+  mutate(row_id = row_number())
+
+# Pivot longer, arrange, and create plot_id
+subcomparison_long <- subcomparison_df %>%
+  pivot_longer(cols = c(Shared.S1, Shared.S2, Unique.S1, Unique.S2),
+               names_to = "category",
+               values_to = "value") %>%
+  mutate(comparison_row_id = paste(Comparison, row_id, sep = "_"),
+         comparison_label = gsub("_\\d+$", "", comparison_row_id),
+         within_comparison_id = gsub("^[^_]+_", "", comparison_row_id),
+         plot_id = interaction(comparison_label, within_comparison_id, sep = " - "),
+         taxa = Taxonomic_Focus) %>%
+  mutate(plot_id = factor(plot_id, levels = unique(plot_id)))
+
+# Add leading zeros to dataframe for ordering and arrange
+subcomparison_long <- subcomparison_long %>%
+  mutate(within_comparison_id = sprintf("%02d", as.numeric(within_comparison_id))) %>% 
+  arrange(desc(within_comparison_id))
+
+# Add spacers
+subcomparison_long <- subcomparison_long %>%
+  group_by(comparison_label) %>%
+  mutate(is_last_row = row_number() == n()) %>%
+  ungroup()
+spacers <- subcomparison_long %>%
+  filter(is_last_row) %>%
+  mutate(category = "spacer", value = 0, plot_id = factor(paste(comparison_label, "spacer", sep = "_")))
+
+subcomparison_long <- bind_rows(subcomparison_long, spacers) %>%
+  arrange(desc(within_comparison_id)) %>%
+  mutate(plot_id = factor(plot_id, levels = unique(plot_id)))
+
+subcomparison_long$category <- factor(subcomparison_long$category, levels = c("Unique.S1", "Shared.S1", "Unique.S2", "Shared.S2", "spacer"))
+
+################################### Plot ###########################################
+
+# Define custom alpha values for each category
+custom_alpha <- c("Unique.S1" = 0.4, 
+                   "Shared.S1" = 1.0, 
+                   "Shared.S2" = 1.0, 
+                   "Unique.S2" = 0.4)
+# Define custom colors for taxa
+custom_colors <- c("Vertebrates" = '#3b528b',
+                  "Invertebrates" = "#ffcc00",
+                  "Microbes" = '#35b779')
+# Define custom labels for each category in the same order as custom_colors (excluding 'spacer')
+legend_labels <- c("Unique.S1" = "Unique", "Shared.S1" = "Shared", "Shared.S2" = "", "Unique.S2" = "Unique")
+# Apply custom alpha and color values
+plot <- ggplot(subcomparison_long, aes(x = plot_id, y = value)) +
+  geom_bar(aes(fill = taxa, alpha = category), stat = "identity", position = "stack", width = 1) +
+  scale_alpha_manual(values = custom_alpha, breaks = c("Unique.S1", "Shared.S1"), 
+                     labels = c("Unique", "Shared")) +
+  scale_fill_manual(values = custom_colors, labels = legend_labels,) +
+  labs(y = "\nPercentage of Total Taxonomic Richness", x = NULL) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.line.x = element_line(color = "white", size = 0),
+    legend.title = element_blank(),
+    legend.position = "top",
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = "white", colour = "white"),
+    plot.background = element_rect(fill = "white", colour = "white"),
+    legend.background = element_rect(fill = "white", colour = "white")
+  ) +
+  scale_y_continuous(breaks = c(-1, -0.5, 0, 0.5, 1), labels = c("100%", "50%", "0", "50%", "100%")) + 
+  coord_flip()
+plot
+
+######################### Plot labels #############################
+
+# Brackets and labels
+brackets_info1 <- data.frame(
+  Substrate = c("Spray aggregation", "Bulk invertebrates", " Plant material", "Soil", "Microbial mats"),
+  start = c(0.1, 2, 10, 15, 44),
+  end = c(2, 10, 15, 44, 46))
+brackets_info2 <-data.frame(
+  Substrate = c("Roller swabs", "Plant material", "Faeces", "Bulk Invertebrates", "Plant material", "Roller swabs", "Microbial mats", "Water"),
+  start = c(0.1, 2, 5, 20, 24, 28, 32, 34),
+  end = c(2, 5, 20, 24, 28, 32, 34, 46))
+
+for(i in 1:nrow(brackets_info1)) {
+  midpoint <- (brackets_info1$start[i] + brackets_info1$end[i]) / 2
+  plot <- plot +
+    annotate("segment", x = brackets_info1$start[i], xend = brackets_info1$start[i], y = 0, yend = -1, color = "black", size = 0.5) +
+    annotate("segment", x = brackets_info1$end[i], xend = brackets_info1$end[i], y = 0, yend = -1, color = "black", size = 0.5) +
+    annotate("segment", x = brackets_info1$start[i], xend = brackets_info1$end[i], y = -1, yend = -1, color = "black", size = 0.5) +
+    annotate("text", x = midpoint, y = -1.02, label = brackets_info1$Substrate[i], hjust = 1, size = 4, angle = 0)
+}
+for(i in 1:nrow(brackets_info2)) {
+  midpoint <- (brackets_info2$start[i] + brackets_info2$end[i]) / 2
+  plot <- plot +
+    annotate("segment", x = brackets_info2$start[i], xend = brackets_info2$start[i], y = 0, yend = 1, color = "black", size = 0.5) +
+    annotate("segment", x = brackets_info2$end[i], xend = brackets_info2$end[i], y = 0, yend = 1, color = "black", size = 0.5) +
+    annotate("segment", x = brackets_info2$start[i], xend = brackets_info2$end[i], y = 1, yend = 1, color = "black", size = 0.5) +
+    annotate("text", x = midpoint, y = 1.02, label = brackets_info2$Substrate[i], hjust = 0, size = 4, angle = 0)
+}
+
+tick_length <- 0.6
+
+# Expand plot limits to ensure annotations are not cut off
+plot <- plot + expand_limits(y = c(-2, 2), x= c(-1, 49))
+# Add subheadings
+plot <- plot +
+  annotate("text", x = 45.7, y = -0.5, label = "Substrate A", hjust = 0.5, vjust = -1, size = 5, angle = 0) +
+  annotate("text", x = 46.7, y = 0, label = "vs", hjust = 0.5, vjust = 0, size = 5, angle = 0) +
+  annotate("text", x = 45.7, y = 0.5, label = "Substrate B", hjust = 0.5, vjust = -1, size = 5, angle = 0) +
+  geom_segment(aes(x = 0, y = 0, xend = 46, yend = 0), color = "black", size = 0.75) +
+  geom_segment(aes(x = 0.1, y = -1, xend = 0.1 - tick_length, yend = -1), color = "black", size = 0.3) +
+  geom_segment(aes(x = 0.1, y = -0.5, xend = 0.1 - tick_length, yend = -0.5), color = "black", size = 0.3) +
+  geom_segment(aes(x = 0.1, y = 0, xend = 0.1 - tick_length, yend = 0), color = "black", size = 0.75) +
+  geom_segment(aes(x = 0.1, y = 0.5, xend = 0.1 - tick_length, yend = 0.5), color = "black", size = 0.3) +
+  geom_segment(aes(x = 0.1, y = 1, xend = 0.1 - tick_length, yend = 1), color = "black", size = 0.3) 
+plot
+
+ggsave("all_subs_comp.png", plot = plot, width = 10, height = 8, dpi = 300)
+
+```
+
+Methods comparison plots:
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(cowplot)
+
+#Data prep for substrate plot
+DNAvsCam <- read.csv("./Method comparison data/Method comparisons all sites.csv") %>%
+  filter(Method2 == 'Camera') %>%
+  filter(Taxa == 'Vertebrate') %>% 
+  mutate(
+    Prop.M1Unique = M1.Unique/Total,
+    Prop.M2Unique = M2.Unique/Total,
+    Prop.Shared = Shared/Total
+  ) %>%
+  select(Study.No., Prop.M1Unique, Prop.M2Unique, Prop.Shared, Taxa, Substrate, Region, Vertebrate.specificity) %>%
+  na.omit() %>% 
+  mutate(Comparison = 'eDNA vs Cameras')
+DNAvsTrad <- read.csv("./Method comparison data/Method comparisons all sites.csv") %>%
+  filter(Method1 == 'eDNA', Method2 != 'Camera') %>% 
+    filter(Taxa == 'Vertebrate') %>% 
+  mutate(
+    Prop.M1Unique = M1.Unique/Total,
+    Prop.M2Unique = M2.Unique/Total,
+    Prop.Shared = Shared/Total
+  ) %>%
+  select(Study.No., Prop.M1Unique, Prop.M2Unique, Prop.Shared, Taxa, Substrate, Region, Vertebrate.specificity) %>%
+  na.omit() %>% 
+  mutate(Comparison = 'eDNA vs Field surveys')
+DNAvsAll = rbind(DNAvsCam, DNAvsTrad)
+
+# Data prep for taxa plot
+DNAvsCam_taxa <- read.csv("./Method comparison data/Method comparisons all sites and taxa.csv") %>%
+  filter(Method2 == 'Camera') %>%
+  filter(Taxa == 'Vertebrate') %>% 
+  mutate(
+    Prop.M1Unique = M1.Unique/Total,
+    Prop.M2Unique = M2.Unique/Total,
+    Prop.Shared = Shared/Total
+  ) %>%
+  select(Study.No., Prop.M1Unique, Prop.M2Unique, Prop.Shared, Taxa, Substrate, Region, Vertebrate.specificity) %>%
+  na.omit() %>% 
+  mutate(Comparison = 'eDNA vs Cameras')
+DNAvsTrad_taxa <- read.csv("./Method comparison data/Method comparisons all sites and taxa.csv") %>%
+  filter(Method1 == 'eDNA', Method2 != 'Camera') %>% 
+    filter(Taxa == 'Vertebrate') %>% 
+  mutate(
+    Prop.M1Unique = M1.Unique/Total,
+    Prop.M2Unique = M2.Unique/Total,
+    Prop.Shared = Shared/Total
+  ) %>%
+  select(Study.No., Prop.M1Unique, Prop.M2Unique, Prop.Shared, Taxa, Substrate, Region, Vertebrate.specificity) %>%
+  na.omit() %>% 
+  mutate(Comparison = 'eDNA vs Field surveys')
+DNAvsAll_taxa = rbind(DNAvsCam_taxa, DNAvsTrad_taxa)
+
+# Data prep for taxa plot
+DNAvsCam_reg <- read.csv("./Method comparison data/Method comparisons all sites and regions.csv") %>%
+  filter(Method2 == 'Camera') %>%
+  filter(Taxa == 'Vertebrate') %>% 
+  mutate(
+    Prop.M1Unique = M1.Unique/Total,
+    Prop.M2Unique = M2.Unique/Total,
+    Prop.Shared = Shared/Total
+  ) %>%
+  select(Study.No., Prop.M1Unique, Prop.M2Unique, Prop.Shared, Taxa, Substrate, Region, Vertebrate.specificity) %>%
+  na.omit() %>% 
+  mutate(Comparison = 'eDNA vs Cameras')
+DNAvsTrad_reg <- read.csv("./Method comparison data/Method comparisons all sites and regions.csv") %>%
+  filter(Method1 == 'eDNA', Method2 != 'Camera') %>% 
+    filter(Taxa == 'Vertebrate') %>% 
+  mutate(
+    Prop.M1Unique = M1.Unique/Total,
+    Prop.M2Unique = M2.Unique/Total,
+    Prop.Shared = Shared/Total
+  ) %>%
+  select(Study.No., Prop.M1Unique, Prop.M2Unique, Prop.Shared, Taxa, Substrate, Region, Vertebrate.specificity) %>%
+  na.omit() %>% 
+  mutate(Comparison = 'eDNA vs Field surveys')
+DNAvsAll_reg = rbind(DNAvsCam_reg, DNAvsTrad_reg)
+
+df = DNAvsAll
+
+substrate_colours <- setNames(c( '#35b779', '#ffcc00','#3b528b', '#440154'), levels(df$Substrate))
+region_colours <- setNames(c('#ffcc00', '#3b528b','#35b779'), unique(df$Region))
+taxa_colours <- setNames(c('#3b528b','#ffcc00', '#35b779', '#440154'), levels(df$Vertebrate.specificity))
+
+comparison_shapes <- setNames(c(16, 17), c('eDNA vs Cameras', 'eDNA vs Field surveys'))
+df$Region <- factor(df$Region, levels = unique(df$Region))
+
+# Substrate plot
+subplot <- ggplot(df, aes(x = factor(1), y = Prop.M1Unique)) +
+  geom_boxplot(aes(x = factor(1), group = factor(1)), width = 0.2, outlier.shape = NA, alpha = 0, fatten = 2) +
+  geom_boxplot(aes(x = factor(2), y = Prop.M2Unique, group = factor(2)), width = 0.2, outlier.shape = NA, alpha = 0, fatten = 2) +
+  geom_point(aes(y = Prop.M1Unique, color = Substrate, shape = Comparison), size = 1.5) +
+  geom_point(aes(x = factor(2), y = Prop.M2Unique, color = Substrate, shape = Comparison), size = 1.5) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Cameras'),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Substrate), size = 0.5) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Field surveys'),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Substrate), size = 0.5, linetype = "dashed") +
+  scale_color_manual(values = substrate_colours) +
+  scale_shape_manual(values = comparison_shapes, guide = "none") +
+  labs(x = "", y = "Percentagte of Total Taxonomic Richness", color = "") +
+  scale_x_discrete(labels = c("eDNA", "Traditional methods")) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(size = 6),
+        axis.line.x = element_line(colour = 'black', size = 1),
+        axis.line.y = element_line(colour = 'black', size = 1),
+        axis.ticks = element_line(colour = "black", size = 1),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white")) +
+  scale_y_continuous(limits = c(-0.05, 1.01), expand = c(0, 0), labels = scales::percent, breaks = seq(0, 1, 0.25)) +
+  guides(color = guide_legend(order = 1)) +
+  annotate("text", label = "a.", fontface = "bold", x = 0.5, y = 1, vjust = 2, hjust = 0, size = 5)
+
+# Region plot
+df = DNAvsAll_reg
+regplot <- ggplot(df, aes(x = factor(1), y = Prop.M1Unique)) +
+  geom_boxplot(aes(x = factor(1), group = factor(1)), width = 0.2, outlier.shape = NA, alpha = 0, fatten = 2) +
+  geom_boxplot(aes(x = factor(2), y = Prop.M2Unique, group = factor(2)), width = 0.2, outlier.shape = NA, alpha = 0, fatten = 2) +
+  geom_point(aes(y = Prop.M1Unique, color = Region, shape = Comparison), size = 1.5) +
+  geom_point(aes(x = factor(2), y = Prop.M2Unique, color = Region, shape = Comparison), size = 1.5) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Cameras'),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Region), size = 0.5) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Field surveys'),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Region), size = 0.5, linetype = "dashed") +
+  scale_color_manual(values = region_colours) +
+  scale_shape_manual(values = comparison_shapes, guide = "none") +
+  labs(x = "", y = "Percentagte of Total Taxonomic Richness", color = "") +
+  scale_x_discrete(labels = c("eDNA", "Traditional methods")) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(size = 6),
+        axis.line.x = element_line(colour = 'black', size = 1),
+        axis.line.y = element_line(colour = 'black', size = 1),
+        axis.ticks = element_line(colour = "black", size = 1),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white")) +
+  scale_y_continuous(limits = c(-0.05, 1.01), expand = c(0, 0), labels = scales::percent, breaks = seq(0, 1, 0.25)) +
+  guides(color = guide_legend(order = 1)) +
+  annotate("text", label = "b.", fontface = "bold", x = 0.5, y = 1, vjust = 2, hjust = 0, size = 5)
+
+# Taxa plot
+df <- DNAvsAll_taxa
+
+# Two lines overlapped so making one more transparent
+row_to_change <- 1  # Row number to change
+
+taxaplot <- ggplot(df, aes(x = factor(1), y = Prop.M1Unique)) +
+  geom_boxplot(aes(x = factor(1), group = factor(1)), width = 0.2, outlier.shape = NA, alpha = 0, fatten = 2) +
+  geom_boxplot(aes(x = factor(2), y = Prop.M2Unique, group = factor(2)), width = 0.2, outlier.shape = NA, alpha = 0, fatten = 2) +
+  geom_point(aes(y = Prop.M1Unique, color = Vertebrate.specificity, shape = Comparison), size = 1.5) +
+  geom_point(aes(x = factor(2), y = Prop.M2Unique, color = Vertebrate.specificity, shape = Comparison), size = 1.5) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Cameras' & rownames(df) == row_to_change),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Vertebrate.specificity), 
+               size = 0.5, linetype = "solid", alpha = 0.6) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Cameras' & !(rownames(df) == row_to_change)),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Vertebrate.specificity), 
+               size = 0.5, linetype = "solid", alpha = 1) +
+  geom_segment(data = filter(df, Comparison == 'eDNA vs Field surveys'),
+               aes(x = factor(1), xend = factor(2), y = Prop.M1Unique, yend = Prop.M2Unique, color = Vertebrate.specificity), 
+               size = 0.5, linetype = "dashed") +
+  scale_color_manual(values = taxa_colours) +
+  scale_shape_manual(values = comparison_shapes, guide = "none") +
+  labs(x = "", y = "Percentage of Total Taxonomic Richness", color = "") +
+  scale_x_discrete(labels = c("eDNA", "Traditional methods")) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(size = 6),
+        axis.line.x = element_line(colour = 'black', size = 1),
+        axis.line.y = element_line(colour = 'black', size = 1),
+        axis.ticks = element_line(colour = "black", size = 1),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white", colour = "white")) +
+  scale_y_continuous(limits = c(-0.05, 1.01), expand = c(0, 0), labels = scales::percent, breaks = seq(0, 1, 0.25)) +
+  guides(color = guide_legend(order = 1)) +
+  annotate("text", label = "c.", fontface = "bold", x = 0.5, y = 1, vjust = 2, hjust = 0, size = 5)
+
+# Adjust themes to hide y-axis titles and x-axis titles for region and taxa plots
+regplot <- regplot + theme(axis.title.y = element_blank())
+taxaplot <- taxaplot + theme(axis.title.y = element_blank())
+
+# Combine the main plots horizontally
+combined_main <- plot_grid(subplot, regplot, taxaplot,
+                           align = "h", ncol = 3)
+# Create a separate plot specifically for the 'Comparison' legend
+legend_comparison <- ggplot(df, aes(x = factor(1), y = Prop.M1Unique)) +
+  geom_point(aes(y = Prop.M1Unique, color = Region, shape = Comparison), size = 3) +
+  geom_point(aes(x = factor(2), y = Prop.M2Unique, color = Region, shape = Comparison), size = 3) +
+  scale_color_manual(values = taxa_colours, guide = "none") +
+  scale_shape_manual(values = comparison_shapes) +
+  labs(x = "", y = "", shape = "") +  # Adjust labels as needed
+  scale_x_discrete(labels = c("eDNA", "Traditional methods")) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 6),
+        legend.title = element_text(face = "bold"))+
+  guides(shape = guide_legend(order = 1)) +
+  annotate("text", label = "b.", fontface = "bold", x = 0.5, y = 1, vjust = 2, hjust = 0, size = 5)
+
+# Get the 'Comparison' legend from the legend plot
+comparison_legend <- cowplot::get_legend(legend_comparison)
+# Arrange the main plots and the 'Comparison' legend together
+final_plot <- plot_grid(
+  combined_main,
+  comparison_legend,
+  ncol = 1, align = 'v', rel_heights = c(3, 0.5)
+)
+
+ggsave("all_methods.png", plot = final_plot, width = 10, height = 5, dpi = 300)
+
+```
+
+#################### Wilcoxon tests #######################
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Function to perform Wilcoxon tests
+perform_wilcox_tests <- function(data, grouping_var, comparison_var = NULL) {
+  groups <- split(data, data[[grouping_var]])
+  
+  if (is.null(comparison_var)) {
+    results <- lapply(names(groups), function(group_name) {
+      group <- groups[[group_name]]
+      test_result <- wilcox.test(group$Prop.M1Unique, group$Prop.M2Unique, paired = TRUE)
+      list(data = group, test = test_result, Group = group_name)
+    })
+  } else {
+    results <- lapply(names(groups), function(group_name) {
+      group <- groups[[group_name]]
+      comp_groups <- split(group, group[[comparison_var]])
+      lapply(names(comp_groups), function(comp_name) {
+        comp_group <- comp_groups[[comp_name]]
+        test_result <- wilcox.test(comp_group$Prop.M1Unique, comp_group$Prop.M2Unique, paired = TRUE)
+        list(data = comp_group, test = test_result, Group = group_name, Comparison = comp_name)
+      })
+    })
+    results <- do.call(c, results)  # Flatten the list
+  }
+  
+  return(results)
+}
+
+# Function to get medians, p-value, and test statistic (v)
+get_summary <- function(data, test_result) {
+  if (!inherits(data, "data.frame") && !inherits(data, "tbl_df")) {
+    stop("Data must be a data frame or tibble.")
+  }
+  
+  medians <- data %>%
+    summarise(
+      median_M1Unique = median(Prop.M1Unique, na.rm = TRUE),
+      median_M2Unique = median(Prop.M2Unique, na.rm = TRUE)
+    )
+  
+  p_value <- test_result$p.value
+  v_value <- test_result$statistic
+  
+  summary <- bind_cols(medians, tibble(p_value = p_value, v_value = v_value))
+  return(summary)
+}
+
+# Function to get medians, p-values, and test statistics for comparison groups
+get_comparison_summary <- function(test_results) {
+  summaries <- lapply(test_results, function(test_result) {
+    group <- test_result$data
+    medians <- group %>%
+      summarise(
+        median_M1Unique = median(Prop.M1Unique, na.rm = TRUE),
+        median_M2Unique = median(Prop.M2Unique, na.rm = TRUE)
+      )
+    p_value <- test_result$test$p.value
+    v_value <- test_result$test$statistic
+    comparison <- test_result$Comparison
+    group_name <- test_result$Group
+    summary <- bind_cols(medians, tibble(p_value = p_value, v_value = v_value, Comparison = comparison, Group = group_name))
+    return(summary)
+  })
+  combined_summary <- bind_rows(summaries)
+  return(combined_summary)
+}
+
+# Perform Wilcoxon tests
+sub_results <- perform_wilcox_tests(DNAvsAll, "Substrate")
+reg_results <- perform_wilcox_tests(DNAvsAll_reg, "Region")
+taxa_results <- perform_wilcox_tests(DNAvsAll_taxa, "Vertebrate.specificity")
+
+sub_results_bycomp <- perform_wilcox_tests(DNAvsAll, "Substrate", "Comparison")
+reg_results_bycomp <- perform_wilcox_tests(DNAvsAll_reg, "Region", "Comparison")
+taxa_results_bycomp <- perform_wilcox_tests(DNAvsAll_taxa, "Vertebrate.specificity", "Comparison")
+
+# Perform overall Wilcoxon tests
+all_sub <- wilcox.test(DNAvsAll$Prop.M1Unique, DNAvsAll$Prop.M2Unique, paired = TRUE)
+all_reg <- wilcox.test(DNAvsAll_reg$Prop.M1Unique, DNAvsAll_reg$Prop.M2Unique, paired = TRUE)
+all_taxa <- wilcox.test(DNAvsAll_taxa$Prop.M1Unique, DNAvsAll_taxa$Prop.M2Unique, paired = TRUE)
+
+# Summarize results for individual groups
+sub_summary_df <- bind_rows(lapply(sub_results, function(result) get_summary(result$data, result$test)), .id = "Substrate")
+reg_summary_df <- bind_rows(lapply(reg_results, function(result) get_summary(result$data, result$test)), .id = "Region")
+taxa_summary_df <- bind_rows(lapply(taxa_results, function(result) get_summary(result$data, result$test)), .id = "Vertebrate.specificity")
+
+# Summarize results by comparison
+sub_comp_summary_df <- get_comparison_summary(sub_results_bycomp)
+reg_comp_summary_df <- get_comparison_summary(reg_results_bycomp)
+taxa_comp_summary_df <- get_comparison_summary(taxa_results_bycomp)
+
+# Print the result tables
+print(sub_summary_df)
+print(reg_summary_df)
+print(taxa_summary_df)
+print(sub_comp_summary_df)
+print(reg_comp_summary_df)
+print(taxa_comp_summary_df)
+
+# Print overall results
+all_sub_summary <- get_summary(DNAvsAll, all_sub)
+all_reg_summary <- get_summary(DNAvsAll_reg, all_reg)
+all_taxa_summary <- get_summary(DNAvsAll_taxa, all_taxa)
+
+print(all_sub_summary)
+print(all_reg_summary)
+print(all_taxa_summary)
+
+```
+
+
+
+
+
+
